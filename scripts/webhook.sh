@@ -96,6 +96,9 @@ build_feishu_message() {
         "证书错误")
             title="SSL证书错误"
             ;;
+        "证书申请")
+            title="SSL证书申请"
+            ;;
         *)
             title="SSL证书通知"
             ;;
@@ -308,4 +311,16 @@ EOF
 
     # 发送错误通知
     send_notification "$ERROR_JSON" "证书错误"
+
+    # 触发证书申请流程
+    if [ "$1" != "renew" ]; then
+        echo "$TIMESTAMP 触发证书申请流程..." >> "$LOG_FILE"
+        /usr/local/bin/get_cert.sh >> "$LOG_FILE" 2>&1
+
+        # 申请成功后重新检查
+        if [ -f "$CERT_PATH" ] && [ -f "$KEY_PATH" ]; then
+            echo "$TIMESTAMP 证书申请成功，重新发送通知" >> "$LOG_FILE"
+            /usr/local/bin/webhook.sh check >> "$LOG_FILE" 2>&1
+        fi
+    fi
 fi

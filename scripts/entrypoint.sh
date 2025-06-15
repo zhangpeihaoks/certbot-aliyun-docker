@@ -28,7 +28,28 @@ if ! crontab -l 2>/dev/null | grep -q "0 8 * * * /usr/local/bin/webhook.sh check
     (crontab -l 2>/dev/null; echo "0 8 * * * /usr/local/bin/webhook.sh check >> $LOG_FILE 2>&1") | crontab -
 fi
 
-/usr/local/bin/get_cert.sh >> $LOG_FILE 2>&1
+# 提取主域名（去掉通配符*）
+BASE_DOMAIN=${DOMAIN#\*\.}
+if [ "$DOMAIN" = "$BASE_DOMAIN" ]; then
+    # 如果没有通配符，直接使用原域名
+    BASE_DOMAIN=$DOMAIN
+fi
+
+# 检查证书是否存在
+CERT_DIR="/etc/letsencrypt/live/$BASE_DOMAIN"
+if [ ! -d "$CERT_DIR" ] || [ ! -f "$CERT_DIR/fullchain.pem" ] || [ ! -f "$CERT_DIR/privkey.pem" ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') 未找到证书，开始申请新证书..." >> $LOG_FILE
+
+    # 调用 get_cert.sh 申请新证书
+    /usr/local/bin/get_cert.sh >> $LOG_FILE 2>&1
+
+    # 检查申请结果
+    if [ $? -ne 0 ] || [ ! -f "$CERT_DIR/fullchain.pem" ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') 证书申请失败" >> $LOG_FILE
+        # 发送错误通知
+        /usr/local/bin/webhook.sh check >> $LOG_FILE 2>&1
+    fi
+fi
 
 # 启动 crond 服务并保持容器运行，同时输出日志
 echo "启动 crond 服务..." >> $LOG_FILE
