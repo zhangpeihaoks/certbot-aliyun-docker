@@ -13,23 +13,35 @@ if [ -f "$CERT_PATH" ] && [ -f "$KEY_PATH" ]; then
 
     # 获取证书信息
     END_DATE=$(openssl x509 -enddate -noout -in "$CERT_PATH" | cut -d= -f2)
-    SERIAL=$(openssl x509 -serial -noout -in "$CERT_PATH" | cut -d= -f2)
-    ISSUER=$(openssl x509 -issuer -noout -in "$CERT_PATH" | sed 's/issuer= //')
 
-    # 构建富文本消息的JSON
-    # 注意：这里使用双引号嵌套，需要转义内部的双引号
+    # 构建飞书消息的JSON
     JSON_PAYLOAD=$(cat <<EOF
 {
     "msg_type": "post",
     "content": {
         "post": {
             "zh_cn": {
-                "title": "证书更新通知",
+                "title": "SSL证书更新通知",
                 "content": [
-                    [{"tag": "text", "text": "域名: $DOMAIN"}],
-                    [{"tag": "text", "text": "有效期至: $END_DATE"}],
-                    [{"tag": "text", "text": "序列号: $SERIAL"}],
-                    [{"tag": "text", "text": "颁发者: $ISSUER"}]
+                    [
+                        {
+                            "tag": "text",
+                            "text": "域名: $DOMAIN"
+                        }
+                    ],
+                    [
+                        {
+                            "tag": "text",
+                            "text": "有效期至: $END_DATE"
+                        }
+                    ],
+                    [
+                        {
+                            "tag": "a",
+                            "text": "查看证书详情",
+                            "href": "https://crt.sh/?q=$DOMAIN"
+                        }
+                    ]
                 ]
             }
         }
