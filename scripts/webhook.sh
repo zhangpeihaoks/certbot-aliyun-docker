@@ -4,11 +4,18 @@ LOG_FILE="/var/log/certbot-renew.log"
 
 [ ! -f "$LOG_FILE" ] && touch "$LOG_FILE"
 
+# 提取主域名（去掉通配符*）
+BASE_DOMAIN=${DOMAIN#\*\.}
+if [ "$DOMAIN" = "$BASE_DOMAIN" ]; then
+    # 如果没有通配符，直接使用原域名
+    BASE_DOMAIN=$DOMAIN
+fi
+
 # 确定证书路径
 if [ "$1" = "check" ] || [ -z "$RENEWED_LINEAGE" ]; then
     # 检查模式或非续订模式
-    CERT_PATH="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
-    KEY_PATH="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+    CERT_PATH="/etc/letsencrypt/live/$BASE_DOMAIN/fullchain.pem"
+    KEY_PATH="/etc/letsencrypt/live/$BASE_DOMAIN/privkey.pem"
 else
     # 续订模式
     CERT_PATH="$RENEWED_LINEAGE/fullchain.pem"
