@@ -66,38 +66,140 @@ get_cert_info() {
         fi
     fi
 
-    # 构建消息
-    MESSAGE="SSL证书状态: $STATUS\n域名: $domain\n有效期至: $END_DATE"
+    # 返回结构化信息
+    echo "STATUS:$STATUS"
+    echo "DOMAIN:$domain"
+    echo "END_DATE:$END_DATE"
+    echo "SERIAL:$SERIAL"
+    echo "ISSUER:$ISSUER"
+    echo "DAYS_LEFT:$DAYS_LEFT"
+}
 
-    # 添加序列号和颁发者（如果可用）
-    [ -n "$SERIAL" ] && MESSAGE="$MESSAGE\n序列号: $SERIAL"
-    [ -n "$ISSUER" ] && MESSAGE="$MESSAGE\n颁发机构: $ISSUER"
+# 构建飞书富文本消息
+build_feishu_message() {
+    local event_type="$1"
+    local status="$2"
+    local domain="$3"
+    local end_date="$4"
+    local serial="$5"
+    local issuer="$6"
+    local days_left="$7"
 
-    echo -e "$MESSAGE"
+    # 根据事件类型设置标题
+    case "$event_type" in
+        "证书更新")
+            title="SSL证书已更新"
+            ;;
+        "每日检查")
+            title="SSL证书状态检查"
+            ;;
+        "证书错误")
+            title="SSL证书错误"
+            ;;
+        *)
+            title="SSL证书通知"
+            ;;
+    esac
+
+    # 构建消息内容
+    cat <<EOF
+{
+    "msg_type": "post",
+    "content": {
+        "post": {
+            "zh_cn": {
+                "title": "$title",
+                "content": [
+                    [
+                        {
+                            "tag": "text",
+                            "text": "状态: "
+                        },
+                        {
+                            "tag": "text",
+                            "text": "$status"
+                        }
+                    ],
+                    [
+                        {
+                            "tag": "text",
+                            "text": "域名: "
+                        },
+                        {
+                            "tag": "text",
+                            "text": "$domain"
+                        }
+                    ],
+                    [
+                        {
+                            "tag": "text",
+                            "text": "有效期: "
+                        },
+                        {
+                            "tag": "text",
+                            "text": "$end_date"
+                        }
+                    ],
+                    [
+                        {
+                            "tag": "text",
+                            "text": "剩余天数: "
+                        },
+                        {
+                            "tag": "text",
+                            "text": "$days_left"
+                        }
+                    ],
+                    [
+                        {
+                            "tag": "text",
+                            "text": "序列号: "
+                        },
+                        {
+                            "tag": "text",
+                            "text": "$serial"
+                        }
+                    ],
+                    [
+                        {
+                            "tag": "text",
+                            "text": "颁发机构: "
+                        },
+                        {
+                            "tag": "text",
+                            "text": "$issuer"
+                        }
+                    ],
+                    [
+                        {
+                            "tag": "text",
+                            "text": "操作: "
+                        },
+                        {
+                            "tag": "a",
+                            "text": "查看证书",
+                            "href": "https://crt.sh/?q=$domain"
+                        }
+                    ]
+                ]
+            }
+        }
+    }
+}
+EOF
 }
 
 # 发送通知函数
 send_notification() {
-    local message="$1"
+    local json_payload="$1"
     local event_type="$2"
 
-    # 清理消息中的特殊字符
-    CLEAN_MESSAGE=$(echo "$message" | sed 's/"/\\"/g' | sed "s/'/\\\'/g" | tr -d '\n' | tr -d '\r')
-
-    # 构建飞书消息
-    JSON_PAYLOAD='{
-        "msg_type": "text",
-        "content": {
-            "text": "'"$CLEAN_MESSAGE"'"
-        }
-    }'
-
     # 打印调试信息
-    echo "发送通知到飞书: $JSON_PAYLOAD" >> "$LOG_FILE"
+    echo "发送通知到飞书: $json_payload" >> "$LOG_FILE"
 
     # 发送通知
     RESPONSE=$(curl -s -X POST -H "Content-Type: application/json" \
-        -d "$JSON_PAYLOAD" \
+        -d "$json_payload" \
         "$WEBHOOK_URL")
 
     TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
@@ -117,28 +219,93 @@ if [ -f "$CERT_PATH" ] && [ -f "$KEY_PATH" ]; then
     echo "$TIMESTAMP 找到证书文件，准备发送通知" >> "$LOG_FILE"
 
     # 获取证书信息
-    MESSAGE=$(get_cert_info "$CERT_PATH" "$DOMAIN")
+    CERT_INFO=$(get_cert_info "$CERT_PATH" "$DOMAIN")
+
+    # 解析证书信息
+    STATUS=$(echo "$CERT_INFO" | grep "^STATUS:" | cut -d: -f2-)
+    DOMAIN_VALUE=$(echo "$CERT_INFO" | grep "^DOMAIN:" | cut -d: -f2-)
+    END_DATE=$(echo "$CERT_INFO" | grep "^END_DATE:" | cut -d: -f2-)
+    SERIAL=$(echo "$CERT_INFO" | grep "^SERIAL:" | cut -d: -f2-)
+    ISSUER=$(echo "$CERT_INFO" | grep "^ISSUER:" | cut -d: -f2-)
+    DAYS_LEFT=$(echo "$CERT_INFO" | grep "^DAYS_LEFT:" | cut -d: -f2-)
 
     # 确定事件类型
     if [ "$1" = "check" ]; then
         EVENT_TYPE="每日检查"
-        MESSAGE="ℹ️ 证书状态检查\n$MESSAGE"
     elif [ -n "$RENEWED_LINEAGE" ]; then
         EVENT_TYPE="证书更新"
-        MESSAGE="🎉 证书已成功更新！\n$MESSAGE"
     else
         EVENT_TYPE="证书检查"
-        MESSAGE="ℹ️ 证书状态检查\n$MESSAGE"
     fi
 
+    # 构建飞书消息
+    JSON_PAYLOAD=$(build_feishu_message "$EVENT_TYPE" "$STATUS" "$DOMAIN_VALUE" "$END_DATE" "$SERIAL" "$ISSUER" "$DAYS_LEFT")
+
     # 发送通知
-    send_notification "$MESSAGE" "$EVENT_TYPE"
+    send_notification "$JSON_PAYLOAD" "$EVENT_TYPE"
 
 else
     TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
     echo "$TIMESTAMP 错误：未找到证书文件" >> "$LOG_FILE"
 
+    # 构建错误消息
+    ERROR_JSON=$(cat <<EOF
+{
+    "msg_type": "post",
+    "content": {
+        "post": {
+            "zh_cn": {
+                "title": "SSL证书错误",
+                "content": [
+                    [
+                        {
+                            "tag": "text",
+                            "text": "错误: "
+                        },
+                        {
+                            "tag": "text",
+                            "text": "未找到证书文件"
+                        }
+                    ],
+                    [
+                        {
+                            "tag": "text",
+                            "text": "域名: "
+                        },
+                        {
+                            "tag": "text",
+                            "text": "$DOMAIN"
+                        }
+                    ],
+                    [
+                        {
+                            "tag": "text",
+                            "text": "路径: "
+                        },
+                        {
+                            "tag": "text",
+                            "text": "$CERT_PATH"
+                        }
+                    ],
+                    [
+                        {
+                            "tag": "text",
+                            "text": "操作: "
+                        },
+                        {
+                            "tag": "a",
+                            "text": "检查证书服务",
+                            "href": "https://crt.sh/?q=$DOMAIN"
+                        }
+                    ]
+                ]
+            }
+        }
+    }
+}
+EOF
+)
+
     # 发送错误通知
-    MESSAGE="❌ 错误：未找到证书文件\n域名: $DOMAIN\n路径: $CERT_PATH\n请检查证书申请流程"
-    send_notification "$MESSAGE" "证书错误"
+    send_notification "$ERROR_JSON" "证书错误"
 fi
