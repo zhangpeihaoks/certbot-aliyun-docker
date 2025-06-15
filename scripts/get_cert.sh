@@ -38,3 +38,10 @@ else
     fi
 
 fi
+
+# 在 get_cert.sh 中添加
+DAILY_CHECK_CRON="0 8 * * * /usr/local/bin/webhook.sh check"
+if ! crontab -l | grep -q "$DAILY_CHECK_CRON"; then
+    echo "添加每日证书检查任务到 crontab..." >> $LOG_FILE
+    echo "$DAILY_CHECK_CRON" | crontab -
+fi
