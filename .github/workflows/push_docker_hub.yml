@@ -31,52 +31,6 @@ jobs:
             jyyqaj/certbot-aliyun-docker:latest
             jyyqaj/certbot-aliyun-docker:${{ github.sha }}
 
-      - name: Generate security signature
-        id: sign
-        run: |
-          # 创建飞书官方签名生成脚本
-          cat << 'EOF' > feishu_sign.py
-          import hashlib
-          import base64
-          import hmac
-          import sys
-          
-          def gen_sign(timestamp, secret):
-              # 拼接timestamp和secret - 完全遵循飞书官方示例
-              string_to_sign = '{}\n{}'.format(timestamp, secret)
-              hmac_code = hmac.new(
-                  secret.encode("utf-8"), 
-                  string_to_sign.encode("utf-8"), 
-                  digestmod=hashlib.sha256
-              ).digest()
-              # 对结果进行base64处理
-              sign = base64.b64encode(hmac_code).decode('utf-8')
-              return sign
-          
-          if __name__ == "__main__":
-              if len(sys.argv) != 3:
-                  print("Usage: python feishu_sign.py <timestamp> <secret>")
-                  sys.exit(1)
-          
-              timestamp = sys.argv[1]
-              secret = sys.argv[2]
-              print(gen_sign(timestamp, secret))
-          EOF
-          
-          # 获取当前时间戳和密钥
-          TIMESTAMP=$(date +%s)
-          SECRET="${{ secrets.FEISHU_WEBHOOK_SECRET }}"
-          
-          # 使用官方脚本生成签名
-          SIGNATURE=$(python feishu_sign.py "$TIMESTAMP" "$SECRET")
-          
-          # 保存到环境变量
-          echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
-          echo "SIGNATURE=$SIGNATURE" >> $GITHUB_ENV
-          
-          echo "Generated timestamp: $TIMESTAMP"
-          echo "Generated signature: $SIGNATURE"
-
       - name: Prepare notification data
         id: prepare_notification
         run: |
@@ -121,8 +75,6 @@ jobs:
           RESPONSE=$(curl -s -w "\n%{http_code}" \
             -X POST \
             -H "Content-Type: application/json" \
-            -H "X-Lark-Request-Timestamp: ${{ env.TIMESTAMP }}" \
-            -H "X-Lark-Signature: ${{ env.SIGNATURE }}" \
             --data "@notification.json" \
             "${{ secrets.FEISHU_WEBHOOK_URL }}")
           
@@ -154,12 +106,9 @@ jobs:
           echo "::error::通知发送失败!"
           echo "请检查以下内容:"
           echo "1. FEISHU_WEBHOOK_URL 是否正确"
-          echo "2. FEISHU_WEBHOOK_SECRET 是否匹配飞书后台设置"
-          echo "3. 飞书机器人是否启用签名验证"
-          echo "4. 时间戳是否有效 (当前: ${{ env.TIMESTAMP }})"
+          echo "2. 飞书机器人是否启用"
           
-          # 显示详细的调试信息
-          echo "Generated signature: ${{ env.SIGNATURE }}"
+          # 显示通知内容
           echo "Notification content:"
           cat notification.json
           
@@ -167,7 +116,5 @@ jobs:
           echo "::group::飞书API验证测试"
           curl -v -X POST ${{ secrets.FEISHU_WEBHOOK_URL }} \
             -H "Content-Type: application/json" \
-            -H "X-Lark-Request-Timestamp: ${{ env.TIMESTAMP }}" \
-            -H "X-Lark-Signature: ${{ env.SIGNATURE }}" \
             -d '{"msg_type":"text","content":{"text":"签名验证测试消息"}}'
           echo "::endgroup::"
