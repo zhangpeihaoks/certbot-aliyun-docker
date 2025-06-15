@@ -1,4 +1,4 @@
-name: Build, Push and Notify
+name: Build, Push and Secure Notify
 
 on:
   push:
@@ -6,13 +6,13 @@ on:
     tags: [ v* ]
 
 jobs:
-  build-and-push:
+  build-and-notify:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
+      - name: Setup Docker
         uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub
@@ -21,9 +21,9 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_TOKEN }}
 
-      - name: Build and push
+      - name: Build and push image
         uses: docker/build-push-action@v5
-        id: build-push
+        id: build
         with:
           context: .
           push: true
@@ -31,79 +31,91 @@ jobs:
             jyyqaj/certbot-aliyun-docker:latest
             jyyqaj/certbot-aliyun-docker:${{ github.sha }}
 
-      - name: Generate webhook signature
+      - name: Generate security signature
         id: sign
         run: |
+          # 使用飞书官方推荐的签名算法
           TIMESTAMP=$(date +%s)
-          SECRET=${{ secrets.FEISHU_WEBHOOK_SECRET }}
+          SECRET="${{ secrets.FEISHU_WEBHOOK_SECRET }}"
+          
+          # 正确的签名生成方式
           SIGN_STRING="$TIMESTAMP\n$SECRET"
+          
+          # 使用OpenSSL生成签名（兼容飞书要求）
           SIGNATURE=$(echo -en "$SIGN_STRING" | openssl dgst -sha256 -hmac "$SECRET" -binary | base64)
+          
+          # 保存到环境变量
           echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
           echo "SIGNATURE=$SIGNATURE" >> $GITHUB_ENV
+          
+          # 调试输出（不显示密钥）
+          echo "Generated timestamp: $TIMESTAMP"
+          echo "Generated signature: ${SIGNATURE:0:10}..."  # 只显示部分签名
+          
+          # 验证签名算法（可选）
+          echo "Verifying signature algorithm..."
+          EXPECTED_SIGNATURE=$(python -c "import hmac, hashlib, base64, sys; print(base64.b64encode(hmac.new(sys.argv[2].encode('utf-8'), sys.argv[1].encode('utf-8'), digestmod=hashlib.sha256).digest()).decode('utf-8')" "$SIGN_STRING" "$SECRET")
+          echo "Python signature: ${EXPECTED_SIGNATURE:0:10}..."
+          if [ "$SIGNATURE" != "$EXPECTED_SIGNATURE" ]; then
+            echo "::warning::Signature mismatch detected!"
+          fi
 
-      - name: Send build notification
-        if: always() && github.ref == 'refs/heads/main'
-        uses: distributhor/workflow-webhook@v2
-        env:
-          webhook_url: ${{ secrets.FEISHU_WEBHOOK_URL }}
-          webhook_method: POST
-          webhook_content_type: 'application/json'
-          webhook_headers: |
-            X-Lark-Request-Timestamp: ${{ env.TIMESTAMP }}
-            X-Lark-Signature: ${{ env.SIGNATURE }}
-          webhook_body: |
-            {
-              "msg_type": "post",
-              "content": {
-                "post": {
-                  "zh_cn": {
-                    "title": "${{ job.status == 'success' && '✅ Docker 构建成功' || '❌ Docker 构建失败' }}",
-                    "content": [
-                      [
-                        {
-                          "tag": "text",
-                          "text": "📦 项目: ${{ github.repository }}"
-                        }
-                      ],
-                      [
-                        {
-                          "tag": "text",
-                          "text": "🌿 分支: ${{ github.ref_name }}"
-                        }
-                      ],
-                      [
-                        {
-                          "tag": "text",
-                          "text": "👤 触发者: ${{ github.actor }}"
-                        }
-                      ],
-                      [
-                        {
-                          "tag": "text",
-                          "text": "🆔 提交: ${{ github.sha }}"
-                        }
-                      ],
-                      [
-                        {
-                          "tag": "text",
-                          "text": "🏷️ 镜像标签: jyyqaj/certbot-aliyun-docker:${{ github.sha }}"
-                        }
-                      ],
-                      [
-                        {
-                          "tag": "text",
-                          "text": "⏱️ 状态: ${{ job.status }} (${{ steps.build-push.outcome }})"
-                        }
-                      ],
-                      [
-                        {
-                          "tag": "a",
-                          "text": "🔍 查看构建详情",
-                          "href": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-                        }
-                      ]
-                    ]
-                  }
-                }
+      - name: Send secure notification
+        id: notify
+        uses: fjogeleit/http-request-action@v1.12.0
+        if: always()
+        with:
+          url: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          method: 'POST'
+          contentType: 'application/json'
+          headers: '{
+          "X-Lark-Request-Timestamp": "${{ env.TIMESTAMP }}",
+          "X-Lark-Signature": "${{ env.SIGNATURE }}"
+        }'
+          data: '{
+          "msg_type": "post",
+          "content": {
+            "post": {
+              "zh_cn": {
+                "title": "${{ job.status == ''success'' && ''✅ Docker 构建成功'' || ''❌ Docker 构建失败'' }}",
+                "content": [
+                  [{"tag":"text","text":"项目: ${{ github.repository }}"}],
+                  [{"tag":"text","text":"分支: ${{ github.ref_name }}"}],
+                  [{"tag":"text","text":"提交: ${{ github.sha }}"}],
+                  [{"tag":"text","text":"触发者: ${{ github.actor }}"}],
+                  [{"tag":"text","text":"状态: ${{ job.status }}"}],
+                  [{"tag":"a","text":"查看构建详情","href":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}]
+                ]
               }
             }
+          }
+        }'
+
+      - name: Handle notification error
+        if: failure() && steps.notify.conclusion == 'failure'
+        run: |
+          echo "::error::通知发送失败!"
+          echo "请检查以下内容:"
+          echo "1. FEISHU_WEBHOOK_URL 是否正确"
+          echo "2. FEISHU_WEBHOOK_SECRET 是否匹配飞书后台设置"
+          echo "3. 飞书机器人是否启用签名验证"
+          echo "4. 网络连接是否正常"
+          
+          # 显示详细的调试信息
+          echo "Timestamp: ${{ env.TIMESTAMP }}"
+          echo "Signature: ${{ env.SIGNATURE }}"
+          echo "Webhook URL: ${{ secrets.FEISHU_WEBHOOK_URL }}"
+          
+          # 尝试使用Python生成签名进行验证
+          echo "::group::Python签名验证"
+          python -c "import hmac, hashlib, base64, sys; print('Python signature:', base64.b64encode(hmac.new(sys.argv[2].encode('utf-8'), sys.argv[1].encode('utf-8'), digestmod=hashlib.sha256).digest()).decode('utf-8'))" "${{ env.TIMESTAMP }}\n${{ secrets.FEISHU_WEBHOOK_SECRET }}" "${{ secrets.FEISHU_WEBHOOK_SECRET }}"
+          echo "::endgroup::"
+          
+          # 尝试直接调用飞书API进行验证
+          echo "::group::飞书API验证测试"
+          curl -v -X POST ${{ secrets.FEISHU_WEBHOOK_URL }} \
+            -H "Content-Type: application/json" \
+            -H "X-Lark-Request-Timestamp: ${{ env.TIMESTAMP }}" \
+            -H "X-Lark-Signature: ${{ env.SIGNATURE }}" \
+            -d '{"msg_type":"text","content":{"text":"签名验证测试消息"}}'
+          echo "::endgroup::"
