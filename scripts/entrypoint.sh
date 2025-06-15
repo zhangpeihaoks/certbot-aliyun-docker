@@ -1,31 +1,28 @@
 #!/bin/bash
 
-# 加载核心功能
-source /usr/local/core_functions/log_manager.sh
-source /usr/local/core_functions/aliyun_auth.sh
+echo "启动入口脚本..."
 
-init_log
-log "启动入口脚本..."
+# 配置阿里云 CLI (关键改进点)
+aliyun configure set --access-key-id "$ALIYUN_ACCESS_KEY_ID" --access-key-secret "$ALIYUN_ACCESS_KEY_SECRET" --region "cn-hangzhou"
 
-# 安全认证阿里云
-if ! authenticate_aliyun; then
-    log "阿里云认证失败，退出"
-    exit 1
+LOG_FILE="/var/log/certbot-renew.log"
+
+# 判断日志文件是否存在，不存在则创建
+if [ ! -f "$LOG_FILE" ]; then
+    touch $LOG_FILE
 fi
 
-# 添加定时任务
+# 添加 CertBot 续订任务到 crontab
 if ! crontab -l | grep -q "0 2 * * * /usr/local/bin/get_cert.sh renew >> $LOG_FILE 2>&1"; then
-    log "添加CertBot续订任务到crontab"
+    echo "将 CertBot 续订任务添加到 crontab..." >> $LOG_FILE
     echo "0 2 * * * /usr/local/bin/get_cert.sh renew >> $LOG_FILE 2>&1" | crontab -
 fi
 
-# 执行证书获取
-/usr/local/bin/get_cert.sh >> "$LOG_FILE" 2>&1
+/usr/local/bin/get_cert.sh >> $LOG_FILE 2>&1
 
-# 启动服务
-log "启动crond服务..."
+# 启动 crond 服务并保持容器运行，同时输出日志
+echo "启动 crond 服务..." >> $LOG_FILE
 crond
 
 # 实时输出日志
-log "开始实时日志监控..."
-tail -f "$LOG_FILE"
+tail -f $LOG_FILE
