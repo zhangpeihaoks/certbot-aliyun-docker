@@ -81,21 +81,34 @@ send_notification() {
     local message="$1"
     local event_type="$2"
 
+    # 清理消息中的特殊字符
+    CLEAN_MESSAGE=$(echo "$message" | sed 's/"/\\"/g' | sed "s/'/\\\'/g" | tr -d '\n' | tr -d '\r')
+
     # 构建飞书消息
     JSON_PAYLOAD='{
         "msg_type": "text",
         "content": {
-            "text": "'"$message"'"
+            "text": "'"$CLEAN_MESSAGE"'"
         }
     }'
 
+    # 打印调试信息
+    echo "发送通知到飞书: $JSON_PAYLOAD" >> "$LOG_FILE"
+
     # 发送通知
-    curl -s -X POST -H "Content-Type: application/json" \
+    RESPONSE=$(curl -s -X POST -H "Content-Type: application/json" \
         -d "$JSON_PAYLOAD" \
-        "$WEBHOOK_URL" >> "$LOG_FILE" 2>&1
+        "$WEBHOOK_URL")
 
     TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-    echo "$TIMESTAMP [$event_type] 飞书通知已发送" >> "$LOG_FILE"
+    echo "$TIMESTAMP [$event_type] 飞书响应: $RESPONSE" >> "$LOG_FILE"
+
+    # 检查响应
+    if echo "$RESPONSE" | grep -q '"StatusCode":0'; then
+        echo "$TIMESTAMP [$event_type] 飞书通知已发送" >> "$LOG_FILE"
+    else
+        echo "$TIMESTAMP [$event_type] 飞书通知发送失败: $RESPONSE" >> "$LOG_FILE"
+    fi
 }
 
 # 主逻辑
@@ -122,7 +135,8 @@ if [ -f "$CERT_PATH" ] && [ -f "$KEY_PATH" ]; then
     send_notification "$MESSAGE" "$EVENT_TYPE"
 
 else
-    echo "$(date '+%Y-%m-%d %H:%M:%S') 错误：未找到证书文件" >> "$LOG_FILE"
+    TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "$TIMESTAMP 错误：未找到证书文件" >> "$LOG_FILE"
 
     # 发送错误通知
     MESSAGE="❌ 错误：未找到证书文件\n域名: $DOMAIN\n路径: $CERT_PATH\n请检查证书申请流程"
