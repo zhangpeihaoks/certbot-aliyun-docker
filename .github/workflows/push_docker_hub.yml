@@ -2,8 +2,8 @@ name: Build, Push and Secure Notify
 
 on:
   push:
-    branches: [ main ]
-    tags: [ v* ]
+    branches: [main]
+    tags: [v*]
 
 jobs:
   build-and-notify:
@@ -34,31 +34,48 @@ jobs:
       - name: Generate security signature
         id: sign
         run: |
-          # 使用飞书官方推荐的签名算法
+          # 创建飞书官方签名生成脚本
+          cat << 'EOF' > feishu_sign.py
+          import hashlib
+          import base64
+          import hmac
+          import sys
+          
+          def gen_sign(timestamp, secret):
+              # 拼接timestamp和secret - 完全遵循飞书官方示例
+              string_to_sign = '{}\n{}'.format(timestamp, secret)
+              hmac_code = hmac.new(
+                  secret.encode("utf-8"), 
+                  string_to_sign.encode("utf-8"), 
+                  digestmod=hashlib.sha256
+              ).digest()
+              # 对结果进行base64处理
+              sign = base64.b64encode(hmac_code).decode('utf-8')
+              return sign
+          
+          if __name__ == "__main__":
+              if len(sys.argv) != 3:
+                  print("Usage: python feishu_sign.py <timestamp> <secret>")
+                  sys.exit(1)
+          
+              timestamp = sys.argv[1]
+              secret = sys.argv[2]
+              print(gen_sign(timestamp, secret))
+          EOF
+          
+          # 获取当前时间戳和密钥
           TIMESTAMP=$(date +%s)
           SECRET="${{ secrets.FEISHU_WEBHOOK_SECRET }}"
           
-          # 正确的签名生成方式
-          SIGN_STRING="$TIMESTAMP\n$SECRET"
-          
-          # 使用OpenSSL生成签名（兼容飞书要求）
-          SIGNATURE=$(echo -en "$SIGN_STRING" | openssl dgst -sha256 -hmac "$SECRET" -binary | base64)
+          # 使用官方脚本生成签名
+          SIGNATURE=$(python feishu_sign.py "$TIMESTAMP" "$SECRET")
           
           # 保存到环境变量
           echo "TIMESTAMP=$TIMESTAMP" >> $GITHUB_ENV
           echo "SIGNATURE=$SIGNATURE" >> $GITHUB_ENV
           
-          # 调试输出（不显示密钥）
           echo "Generated timestamp: $TIMESTAMP"
-          echo "Generated signature: ${SIGNATURE:0:10}..."  # 只显示部分签名
-          
-          # 验证签名算法（可选）
-          echo "Verifying signature algorithm..."
-          EXPECTED_SIGNATURE=$(python -c "import hmac, hashlib, base64, sys; print(base64.b64encode(hmac.new(sys.argv[2].encode('utf-8'), sys.argv[1].encode('utf-8'), digestmod=hashlib.sha256).digest()).decode('utf-8')" "$SIGN_STRING" "$SECRET")
-          echo "Python signature: ${EXPECTED_SIGNATURE:0:10}..."
-          if [ "$SIGNATURE" != "$EXPECTED_SIGNATURE" ]; then
-            echo "::warning::Signature mismatch detected!"
-          fi
+          echo "Generated signature: $SIGNATURE"
 
       - name: Send secure notification
         id: notify
@@ -105,11 +122,6 @@ jobs:
           echo "Timestamp: ${{ env.TIMESTAMP }}"
           echo "Signature: ${{ env.SIGNATURE }}"
           echo "Webhook URL: ${{ secrets.FEISHU_WEBHOOK_URL }}"
-          
-          # 尝试使用Python生成签名进行验证
-          echo "::group::Python签名验证"
-          python -c "import hmac, hashlib, base64, sys; print('Python signature:', base64.b64encode(hmac.new(sys.argv[2].encode('utf-8'), sys.argv[1].encode('utf-8'), digestmod=hashlib.sha256).digest()).decode('utf-8'))" "${{ env.TIMESTAMP }}\n${{ secrets.FEISHU_WEBHOOK_SECRET }}" "${{ secrets.FEISHU_WEBHOOK_SECRET }}"
-          echo "::endgroup::"
           
           # 尝试直接调用飞书API进行验证
           echo "::group::飞书API验证测试"
