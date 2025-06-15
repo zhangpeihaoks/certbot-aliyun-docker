@@ -1,116 +1,84 @@
-name: Build, Push and Notify
+name: Build, Push and Secure Notify
 
 on:
   push:
     branches: [main]
     tags: [v*]
-  pull_request:
-    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-and-push:
+  build-and-notify:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: jyyqaj/certbot-aliyun-docker
-          tags: |
-            type=raw,value=latest
-            type=sha
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_TOKEN }}
-
-      - name: Build and push
-        uses: docker/build-push-action@v5
-        id: build-push
-        with:
-          context: .
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-      - name: Send build notification
-        if: always() && github.ref == 'refs/heads/main'
-        uses: distributhor/workflow-webhook@v2
-        env:
-          webhook_url: ${{ secrets.FEISHU_WEBHOOK_URL }}
-          webhook_method: POST
-          webhook_content_type: 'application/json'
-          webhook_body: |
-            {
-              "msg_type": "post",
-              "content": {
-                "post": {
-                  "zh_cn": {
-                    "title": "${{ job.status == 'success' && '✅ Docker 构建成功' || '❌ Docker 构建失败' }}",
-                    "content": [
-                      [
-                        {
-                          "tag": "text",
-                          "text": "📦 项目: ${{ github.repository }}"
-                        }
-                      ],
-                      [
-                        {
-                          "tag": "text",
-                          "text": "🌿 分支: ${{ github.ref_name }}"
-                        }
-                      ],
-                      [
-                        {
-                          "tag": "text",
-                          "text": "👤 触发者: ${{ github.actor }}"
-                        }
-                      ],
-                      [
-                        {
-                          "tag": "text",
-                          "text": "🆔 提交: ${{ github.sha }}"
-                        }
-                      ],
-                      [
-                        {
-                          "tag": "text",
-                          "text": "🏷️ 标签: ${{ steps.meta.outputs.tags }}"
-                        }
-                      ],
-                      [
-                        {
-                          "tag": "text",
-                          "text": "⏱️ 持续时间: ${{ job.steps[4].conclusion && '成功' || '失败' }} (${{ job.steps[4].outcome }})"
-                        }
-                      ],
-                      [
-                        {
-                          "tag": "a",
-                          "text": "🔍 查看构建详情",
-                          "href": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-                        }
-                      ]
-                    ]
-                  }
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Docker
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_TOKEN }}
+        
+    - name: Build and push image
+      uses: docker/build-push-action@v5
+      id: build
+      with:
+        context: .
+        push: true
+        tags: |
+          jyyqaj/certbot-aliyun-docker:latest
+          jyyqaj/certbot-aliyun-docker:${{ github.sha }}
+    
+    - name: Generate security signature
+      id: sign
+      run: |
+        TIMESTAMP=$(date +%s)
+        SECRET=${{ secrets.FEISHU_WEBHOOK_SECRET }}
+        SIGN_STRING="${TIMESTAMP}\n${SECRET}"
+        SIGNATURE=$(echo -en "$SIGN_STRING" | openssl dgst -sha256 -hmac "$SECRET" -binary | base64)
+        echo "TIMESTAMP=${TIMESTAMP}" >> $GITHUB_ENV
+        echo "SIGNATURE=${SIGNATURE}" >> $GITHUB_ENV
+      
+    - name: Send secure notification
+      id: notify
+      uses: distributhor/workflow-webhook@v2
+      if: always()
+      env:
+        webhook_url: ${{ secrets.FEISHU_WEBHOOK_URL }}
+        webhook_method: POST
+        webhook_content_type: application/json
+        webhook_headers: |
+          X-Lark-Request-Timestamp: ${{ env.TIMESTAMP }}
+          X-Lark-Signature: ${{ env.SIGNATURE }}
+        webhook_body: |
+          {
+            "msg_type": "post",
+            "content": {
+              "post": {
+                "zh_cn": {
+                  "title": "${{ job.status == 'success' && '✅ 构建成功' || '❌ 构建失败' }}",
+                  "content": [
+                    [{"tag":"text","text":"项目: ${{ github.repository }}"}],
+                    [{"tag":"text","text":"提交: ${{ github.sha }}"}],
+                    [{"tag":"text","text":"状态: ${{ job.status }}"}],
+                    [{"tag":"a","text":"查看详情","href":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}]
+                  ]
                 }
               }
             }
-            
+          }
+    
+    - name: Handle notification error
+      if: failure() && steps.notify.conclusion == 'failure'
+      run: |
+        echo "::warning::通知发送失败"
+        echo "请检查:"
+        echo "1. FEISHU_WEBHOOK_URL 是否正确"
+        echo "2. FEISHU_WEBHOOK_SECRET 是否匹配"
+        echo "3. 网络连接是否正常"
