@@ -4,36 +4,69 @@ LOG_FILE="/var/log/certbot-renew.log"
 
 [ ! -f "$LOG_FILE" ] && touch "$LOG_FILE"
 
-CERT_PATH="$RENEWED_LINEAGE/fullchain.pem"
-KEY_PATH="$RENEWED_LINEAGE/privkey.pem"
+# 确定证书路径
+if [ "$1" = "check" ] || [ -z "$RENEWED_LINEAGE" ]; then
+    # 检查模式或非续订模式
+    CERT_PATH="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+    KEY_PATH="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+else
+    # 续订模式
+    CERT_PATH="$RENEWED_LINEAGE/fullchain.pem"
+    KEY_PATH="$RENEWED_LINEAGE/privkey.pem"
+fi
 
 # 获取证书信息函数
 get_cert_info() {
     local cert_path="$1"
     local domain="$2"
 
-    END_DATE=$(openssl x509 -enddate -noout -in "$cert_path" | cut -d= -f2)
-    SERIAL=$(openssl x509 -serial -noout -in "$cert_path" | cut -d= -f2)
-    ISSUER=$(openssl x509 -issuer -noout -in "$cert_path" | sed 's/issuer= //')
+    # 检查证书文件是否存在
+    if [ ! -f "$cert_path" ]; then
+        echo "❌ 错误：证书文件不存在"
+        return 1
+    fi
+
+    # 获取证书信息
+    END_DATE=$(openssl x509 -enddate -noout -in "$cert_path" 2>/dev/null | cut -d= -f2)
+    SERIAL=$(openssl x509 -serial -noout -in "$cert_path" 2>/dev/null | cut -d= -f2)
+    ISSUER=$(openssl x509 -issuer -noout -in "$cert_path" 2>/dev/null | sed 's/issuer= //')
+
+    # 检查是否成功获取信息
+    if [ -z "$END_DATE" ]; then
+        echo "❌ 错误：无法读取证书信息"
+        return 1
+    fi
 
     # 计算剩余天数
-    end_epoch=$(date -d "$END_DATE" +%s)
+    end_epoch=$(date -d "$END_DATE" +%s 2>/dev/null)
     now_epoch=$(date +%s)
-    DAYS_LEFT=$(( (end_epoch - now_epoch) / 86400 ))
 
-    # 根据剩余天数设置状态
-    if [ $DAYS_LEFT -lt 7 ]; then
-        STATUS="⚠️ 即将过期 ($DAYS_LEFT 天后)"
-    elif [ $DAYS_LEFT -lt 30 ]; then
-        STATUS="🟡 即将到期 ($DAYS_LEFT 天后)"
+    if [ -z "$end_epoch" ]; then
+        DAYS_LEFT="未知"
+        STATUS="⚠️ 无法确定有效期"
     else
-        STATUS="✅ 有效 ($DAYS_LEFT 天后)"
+        DAYS_LEFT=$(( (end_epoch - now_epoch) / 86400 ))
+
+        # 根据剩余天数设置状态
+        if [ $DAYS_LEFT -lt 0 ]; then
+            STATUS="❌ 已过期 ($((-DAYS_LEFT)) 天前)"
+        elif [ $DAYS_LEFT -lt 7 ]; then
+            STATUS="⚠️ 即将过期 ($DAYS_LEFT 天后)"
+        elif [ $DAYS_LEFT -lt 30 ]; then
+            STATUS="🟡 即将到期 ($DAYS_LEFT 天后)"
+        else
+            STATUS="✅ 有效 ($DAYS_LEFT 天后)"
+        fi
     fi
 
     # 构建消息
-    MESSAGE="SSL证书状态: $STATUS\n域名: $domain\n有效期至: $END_DATE\n序列号: $SERIAL\n颁发机构: $ISSUER"
+    MESSAGE="SSL证书状态: $STATUS\n域名: $domain\n有效期至: $END_DATE"
 
-    echo "$MESSAGE"
+    # 添加序列号和颁发者（如果可用）
+    [ -n "$SERIAL" ] && MESSAGE="$MESSAGE\n序列号: $SERIAL"
+    [ -n "$ISSUER" ] && MESSAGE="$MESSAGE\n颁发机构: $ISSUER"
+
+    echo -e "$MESSAGE"
 }
 
 # 发送通知函数
@@ -67,7 +100,10 @@ if [ -f "$CERT_PATH" ] && [ -f "$KEY_PATH" ]; then
     MESSAGE=$(get_cert_info "$CERT_PATH" "$DOMAIN")
 
     # 确定事件类型
-    if [ -n "$RENEWED_LINEAGE" ]; then
+    if [ "$1" = "check" ]; then
+        EVENT_TYPE="每日检查"
+        MESSAGE="ℹ️ 证书状态检查\n$MESSAGE"
+    elif [ -n "$RENEWED_LINEAGE" ]; then
         EVENT_TYPE="证书更新"
         MESSAGE="🎉 证书已成功更新！\n$MESSAGE"
     else
@@ -82,6 +118,6 @@ else
     echo "$(date '+%Y-%m-%d %H:%M:%S') 错误：未找到证书文件" >> "$LOG_FILE"
 
     # 发送错误通知
-    MESSAGE="❌ 错误：未找到证书文件\n域名: $DOMAIN\n请检查证书申请流程"
+    MESSAGE="❌ 错误：未找到证书文件\n域名: $DOMAIN\n路径: $CERT_PATH\n请检查证书申请流程"
     send_notification "$MESSAGE" "证书错误"
 fi
