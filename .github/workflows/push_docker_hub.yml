@@ -77,52 +77,91 @@ jobs:
           echo "Generated timestamp: $TIMESTAMP"
           echo "Generated signature: $SIGNATURE"
 
-      - name: Send secure notification
-        id: notify
-        uses: fjogeleit/http-request-action@v1.12.0
-        if: always()
-        with:
-          url: ${{ secrets.FEISHU_WEBHOOK_URL }}
-          method: 'POST'
-          contentType: 'application/json'
-          # 使用正确的 customHeaders 参数代替 headers
-          customHeaders: '{
-          "X-Lark-Request-Timestamp": "${{ env.TIMESTAMP }}",
-          "X-Lark-Signature": "${{ env.SIGNATURE }}"
-        }'
-          data: '{
-          "msg_type": "post",
-          "content": {
-            "post": {
-              "zh_cn": {
-                "title": "${{ job.status == ''success'' && ''✅ Docker 构建成功'' || ''❌ Docker 构建失败'' }}",
-                "content": [
-                  [{"tag":"text","text":"项目: ${{ github.repository }}"}],
-                  [{"tag":"text","text":"分支: ${{ github.ref_name }}"}],
-                  [{"tag":"text","text":"提交: ${{ github.sha }}"}],
-                  [{"tag":"text","text":"触发者: ${{ github.actor }}"}],
-                  [{"tag":"text","text":"状态: ${{ job.status }}"}],
-                  [{"tag":"a","text":"查看构建详情","href":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}]
-                ]
+      - name: Prepare notification data
+        id: prepare_notification
+        run: |
+          # 根据构建状态设置标题
+          if [ "${{ job.status }}" = "success" ]; then
+            TITLE="✅ Docker 构建成功"
+          else
+            TITLE="❌ Docker 构建失败"
+          fi
+          
+          # 创建通知数据文件
+          cat << EOF > notification.json
+          {
+            "msg_type": "post",
+            "content": {
+              "post": {
+                "zh_cn": {
+                  "title": "$TITLE",
+                  "content": [
+                    [{"tag":"text","text":"项目: ${{ github.repository }}"}],
+                    [{"tag":"text","text":"分支: ${{ github.ref_name }}"}],
+                    [{"tag":"text","text":"提交: ${{ github.sha }}"}],
+                    [{"tag":"text","text":"触发者: ${{ github.actor }}"}],
+                    [{"tag":"text","text":"状态: ${{ job.status }}"}],
+                    [{"tag":"a","text":"查看构建详情","href":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}]
+                  ]
+                }
               }
             }
           }
-        }'
+          EOF
+          
+          # 打印通知内容用于调试
+          echo "Notification content:"
+          cat notification.json
+
+      - name: Send notification with curl
+        id: send_notification
+        run: |
+          # 发送通知
+          echo "Sending notification to Feishu..."
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-Lark-Request-Timestamp: ${{ env.TIMESTAMP }}" \
+            -H "X-Lark-Signature: ${{ env.SIGNATURE }}" \
+            --data "@notification.json" \
+            "${{ secrets.FEISHU_WEBHOOK_URL }}")
+          
+          # 提取响应状态码和内容
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+          RESPONSE_BODY=$(echo "$RESPONSE" | head -n -1)
+          
+          echo "Feishu response status: $HTTP_STATUS"
+          echo "Feishu response body: $RESPONSE_BODY"
+          
+          # 检查响应状态
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "::error::飞书通知发送失败，HTTP状态码: $HTTP_STATUS"
+            exit 1
+          fi
+          
+          # 检查飞书返回的错误码
+          ERROR_CODE=$(echo "$RESPONSE_BODY" | jq -r '.code')
+          if [ "$ERROR_CODE" != "0" ]; then
+            echo "::error::飞书返回错误: $RESPONSE_BODY"
+            exit 1
+          fi
+          
+          echo "通知发送成功！"
 
       - name: Handle notification error
-        if: failure() && steps.notify.conclusion == 'failure'
+        if: failure() && steps.send_notification.conclusion == 'failure'
         run: |
           echo "::error::通知发送失败!"
           echo "请检查以下内容:"
           echo "1. FEISHU_WEBHOOK_URL 是否正确"
           echo "2. FEISHU_WEBHOOK_SECRET 是否匹配飞书后台设置"
           echo "3. 飞书机器人是否启用签名验证"
-          echo "4. 网络连接是否正常"
+          echo "4. 时间戳是否有效 (当前: ${{ env.TIMESTAMP }})"
           
           # 显示详细的调试信息
-          echo "Timestamp: ${{ env.TIMESTAMP }}"
-          echo "Signature: ${{ env.SIGNATURE }}"
-          echo "Webhook URL: ${{ secrets.FEISHU_WEBHOOK_URL }}"
+          echo "Generated signature: ${{ env.SIGNATURE }}"
+          echo "Notification content:"
+          cat notification.json
           
           # 尝试直接调用飞书API进行验证
           echo "::group::飞书API验证测试"
