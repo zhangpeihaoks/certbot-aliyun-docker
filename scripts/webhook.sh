@@ -28,6 +28,8 @@ if [ -f "$CERT_PATH" ] && [ -f "$KEY_PATH" ]; then
     颁发者: $ISSUER
     路径: $CERT_PATH"
 
+    echo "req:{\"msg_type\": \"text\", \"content\": {\"text\": \"$MESSAGE\"}}" >> "$LOG_FILE"
+
     # 飞书Webhook请求（极简版）
     curl -s -X POST -H "Content-Type: application/json" \
         -d "{\"msg_type\": \"text\", \"content\": {\"text\": \"$MESSAGE\"}}" \
