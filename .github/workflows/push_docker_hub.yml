@@ -85,7 +85,8 @@ jobs:
           url: ${{ secrets.FEISHU_WEBHOOK_URL }}
           method: 'POST'
           contentType: 'application/json'
-          headers: '{
+          # 使用正确的 customHeaders 参数代替 headers
+          customHeaders: '{
           "X-Lark-Request-Timestamp": "${{ env.TIMESTAMP }}",
           "X-Lark-Signature": "${{ env.SIGNATURE }}"
         }'
