@@ -6,6 +6,14 @@ send_to_feishu() {
     local key_content="$3"
     local encrypt_key="${4:-}"
 
+    # 修复 MD5 命令问题
+    if ! command -v md5 &> /dev/null; then
+        # Alpine Linux 使用 md5sum
+        md5() {
+            md5sum | cut -d' ' -f1
+        }
+    fi
+
     # 基础JSON结构
     local json_template='{
         "msg_type": "post",
