@@ -6,26 +6,59 @@ echo "启动入口脚本..."
 aliyun configure set --access-key-id "$ALIYUN_ACCESS_KEY_ID" --access-key-secret "$ALIYUN_ACCESS_KEY_SECRET" --region "cn-hangzhou"
 
 LOG_FILE="/var/log/certbot-renew.log"
-
-# 判断日志文件是否存在，不存在则创建
 if [ ! -f "$LOG_FILE" ]; then
-    touch $LOG_FILE
+    mkdir -p "$(dirname "$LOG_FILE")"
+    touch "$LOG_FILE"
+    if [ $? -ne 0 ]; then
+        echo "无法创建日志文件 $LOG_FILE，退出脚本"
+        exit 1
+    fi
 fi
 
 # 确保 crontab 目录存在
 mkdir -p /var/spool/cron/crontabs
 chmod 0700 /var/spool/cron/crontabs
 
+# 检查 get_cert.sh 脚本的存在和权限
+GET_CERT_SCRIPT="/usr/local/bin/get_cert.sh"
+if [ ! -f "$GET_CERT_SCRIPT" ]; then
+    echo "未找到 $GET_CERT_SCRIPT 脚本，退出脚本"
+    exit 1
+fi
+if [ ! -x "$GET_CERT_SCRIPT" ]; then
+    chmod +x "$GET_CERT_SCRIPT"
+fi
+
+# 检查 webhook.sh 脚本的存在和权限
+WEBHOOK_SCRIPT="/usr/local/bin/webhook.sh"
+if [ ! -f "$WEBHOOK_SCRIPT" ]; then
+    echo "未找到 $WEBHOOK_SCRIPT 脚本，退出脚本"
+    exit 1
+fi
+if [ ! -x "$WEBHOOK_SCRIPT" ]; then
+    chmod +x "$WEBHOOK_SCRIPT"
+fi
+
 # 添加 CertBot 续订任务到 crontab
-if ! crontab -l 2>/dev/null | grep -q "0 2 * * * /usr/local/bin/get_cert.sh renew >> $LOG_FILE 2>&1"; then
+CERT_RENEW_TASK="0 2 * * * /usr/local/bin/get_cert.sh renew >> $LOG_FILE 2>&1"
+if ! crontab -l 2>/dev/null | grep -q "$CERT_RENEW_TASK"; then
     echo "将 CertBot 续订任务添加到 crontab..." >> $LOG_FILE
-    echo "0 2 * * * /usr/local/bin/get_cert.sh renew >> $LOG_FILE 2>&1" | crontab -
+    (crontab -l 2>/dev/null; echo "$CERT_RENEW_TASK") | crontab -
+    if [ $? -ne 0 ]; then
+        echo "无法添加 CertBot 续订任务到 crontab，退出脚本"
+        exit 1
+    fi
 fi
 
 # 添加每日证书检查任务
-if ! crontab -l 2>/dev/null | grep -q "0 8 * * * /usr/local/bin/webhook.sh check >> $LOG_FILE 2>&1"; then
+CERT_CHECK_TASK="0 8 * * * /usr/local/bin/webhook.sh check >> $LOG_FILE 2>&1"
+if ! crontab -l 2>/dev/null | grep -q "$CERT_CHECK_TASK"; then
     echo "添加每日证书检查任务到 crontab..." >> $LOG_FILE
-    (crontab -l 2>/dev/null; echo "0 8 * * * /usr/local/bin/webhook.sh check >> $LOG_FILE 2>&1") | crontab -
+    (crontab -l 2>/dev/null; echo "$CERT_CHECK_TASK") | crontab -
+    if [ $? -ne 0 ]; then
+        echo "无法添加每日证书检查任务到 crontab，退出脚本"
+        exit 1
+    fi
 fi
 
 # 提取主域名（去掉通配符*）
